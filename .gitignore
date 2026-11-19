@@ -1,0 +1,12 @@
+# 数据文件一律不提交（data/ 下只提交说明文件）
+*.csv
+*.parquet
+*.zip
+
+# 虚拟环境、缓存、系统文件、待删除的旧文件
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+.pytest_cache/
+.DS_Store
+_to_delete/

@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>深交所订单簿重建教程</title>
+<style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+        background: linear-gradient(135deg, #e8f4f8 0%, #d1e9f0 100%);
+        font-family: system-ui, -apple-system, 'PingFang SC', 'Segoe UI', sans-serif;
+        padding: 20px; line-height: 1.8; color: #1f2937;
+    }
+    .double-border {
+        max-width: 1400px; margin: 0 auto; background: #fff;
+        border: 2px solid #f1c40f; border-radius: 24px;
+        box-shadow: 0 20px 30px -15px rgba(0,0,0,0.2), inset 0 1px 0 0 #fff8e0;
+        overflow: hidden;
+    }
+    .container { display: grid; grid-template-columns: 260px 1fr; }
+    .sidebar {
+        background: #fefcf5; border-right: 2px solid #fdebb3; padding: 24px 16px;
+        position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto;
+    }
+    .sidebar h3 { font-size: 1.3rem; color: #b45f06; border-left: 5px solid #f39c12; padding-left: 15px; margin-bottom: 20px; }
+    .chapter-list { list-style: none; }
+    .chapter-list li { margin-bottom: 4px; }
+    .chapter-list a {
+        display: block; padding: 7px 12px; text-decoration: none; color: #2c3e50;
+        border-radius: 12px; transition: all 0.2s; font-weight: 500; font-size: 0.95rem;
+    }
+    .chapter-list a:hover { background: #fdebd0; transform: translateX(3px); }
+    .main-content { padding: 30px 40px; }
+    h1 { color: #1e3a8a; font-size: 1.9rem; margin-bottom: 8px; }
+    .subtitle { color: #64748b; margin-bottom: 20px; }
+    h2 { color: #1e3a8a; border-left: 6px solid #f59e0b; padding-left: 15px; margin: 40px 0 15px; }
+    h3 { color: #2c3e50; margin: 22px 0 10px; }
+    p { margin: 10px 0; }
+    ul, ol { margin: 10px 0 10px 24px; }
+    code { background: #f1f5f9; padding: 1px 6px; border-radius: 6px; font-family: 'JetBrains Mono', Menlo, monospace; font-size: 0.92em; }
+    pre {
+        background: #2d2f36; color: #f8f8f2; padding: 15px; border-radius: 12px;
+        overflow-x: auto; font-family: 'JetBrains Mono', Menlo, monospace; margin: 15px 0; line-height: 1.6;
+    }
+    pre code { background: none; padding: 0; color: inherit; }
+    table { width: 100%; border-collapse: collapse; margin: 15px 0; background: #fefce8; }
+    th, td { border: 1px solid #fcd34d; padding: 9px; text-align: left; }
+    th { background: #fffbeb; }
+    .tip, .warning, .highlight { padding: 12px 18px; border-radius: 16px; margin: 15px 0; }
+    .tip { background: #e0f2fe; border-left: 6px solid #0ea5e9; }
+    .warning { background: #fee2e2; border-left: 6px solid #ef4444; }
+    .highlight { background: #fef9c3; border: 1px solid #facc15; }
+    .takeaway { background: #ecfdf5; border-left: 6px solid #10b981; padding: 12px 18px; border-radius: 16px; margin: 18px 0; font-weight: 600; }
+    svg { max-width: 100%; height: auto; margin: 10px 0; }
+    footer { text-align: center; margin-top: 40px; padding: 15px; color: #64748b; border-top: 1px dashed #e2e8f0; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<div class="double-border">
+<div class="container">
+<div class="sidebar">
+    <h3>📚 目录</h3>
+    <ul class="chapter-list">
+        <li><a href="#c1">第1章 我们要做什么</a></li>
+        <li><a href="#c2">第2章 深市数据长什么样</a></li>
+        <li><a href="#c3">第3章 合成一条逐笔流</a></li>
+        <li><a href="#c4">第4章 回放：一行一行读</a></li>
+        <li><a href="#c5">第5章 黑板和本子：三本字典</a></li>
+        <li><a href="#c6">第6章 apply_row：分派纸条</a></li>
+        <li><a href="#c7">第7章 add_order：三种委托怎么挂</a></li>
+        <li><a href="#c8">第8章 _reduce_order：成交和撤单</a></li>
+        <li><a href="#c9">第9章 查询：买一卖一和前十档</a></li>
+        <li><a href="#c10">第10章 对账和验收</a></li>
+        <li><a href="#c11">第11章 回头看和下一步</a></li>
+    </ul>
+</div>
+<div class="main-content">
+
+<h1>深交所订单簿重建教程</h1>
+<p class="subtitle">代码：<code>lob_rebuild/src/lob/sz_stock_build_orderbook.py</code>（深市拼逐笔流）+ <code>build_orderbook.py</code>（公共：建订单簿、对账） · 数据：SZ_000001_20260302、SZ_300750_20220426</p>
+
+<!-- ============================================================ -->
+<h2 id="c1">1、我们要做什么</h2>
+
+<p>先说清楚目标。交易所每隔几秒会发一张“十档快照”，告诉你买一到买十、卖一到卖十各有多少股。可是两张快照之间，盘口到底怎么变的，快照不告诉你。</p>
+
+<p>L2 逐笔数据把每一笔委托、每一笔成交、每一笔撤单都记下来了。说白了，我们要做的事就是：<strong>拿着这些逐笔记录，从开盘第一笔开始，一笔一笔地把盘口“演”出来</strong>。演到哪一刻停下来，手上就是那一刻的盘口。</p>
+
+<p>怎么知道演对了？收盘时，拿我们演出来的十档，和交易所最后一张快照一档一档比。价格和数量全部相同，就说明这一天每一步都没出错。</p>
+
+<div class="highlight">
+<p><strong>核心要点：</strong>输入是一只股票一天的逐笔数据，输出是重建出的订单簿和对账表。我们只做“回放”，不做“撮合”：谁和谁成交，交易所已经写在成交记录里了，我们照着加减就行。</p>
+</div>
+
+<p>整个流程只有三步，就是 <code>main()</code> 里写的那样：</p>
+
+<svg width="760" height="170" viewBox="0 0 760 170" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="ar" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#6b7280"/></marker></defs>
+  <rect width="760" height="170" fill="#f9fafb" rx="10"/>
+  <rect x="20" y="30" width="150" height="50" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+  <text x="95" y="52" text-anchor="middle" font-size="13" font-weight="bold" fill="#1e40af">orders.csv</text>
+  <text x="95" y="70" text-anchor="middle" font-size="11" fill="#475569">逐笔委托</text>
+  <rect x="20" y="95" width="150" height="50" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+  <text x="95" y="117" text-anchor="middle" font-size="13" font-weight="bold" fill="#1e40af">trades.csv</text>
+  <text x="95" y="135" text-anchor="middle" font-size="11" fill="#475569">逐笔成交 + 撤单</text>
+  <line x1="170" y1="55" x2="225" y2="80" stroke="#6b7280" stroke-width="2" marker-end="url(#ar)"/>
+  <line x1="170" y1="120" x2="225" y2="95" stroke="#6b7280" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="230" y="60" width="160" height="55" rx="8" fill="#f3e8ff" stroke="#a855f7" stroke-width="2"/>
+  <text x="310" y="83" text-anchor="middle" font-size="13" font-weight="bold" fill="#6b21a8">第1步 逐笔流</text>
+  <text x="310" y="101" text-anchor="middle" font-size="11" fill="#475569">load_sz_tick_by_tick</text>
+  <line x1="390" y1="87" x2="425" y2="87" stroke="#6b7280" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="430" y="60" width="160" height="55" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+  <text x="510" y="83" text-anchor="middle" font-size="13" font-weight="bold" fill="#166534">第2步 回放</text>
+  <text x="510" y="101" text-anchor="middle" font-size="11" fill="#475569">build_order_book</text>
+  <line x1="590" y1="87" x2="625" y2="87" stroke="#6b7280" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="630" y="60" width="115" height="55" rx="8" fill="#fef9c3" stroke="#eab308" stroke-width="2"/>
+  <text x="687" y="83" text-anchor="middle" font-size="13" font-weight="bold" fill="#854d0e">对账</text>
+  <text x="687" y="101" text-anchor="middle" font-size="10" fill="#475569">compare_with_snapshot</text>
+</svg>
+
+<h3>1.1 整体思路：先拼逐笔流，再建订单簿</h3>
+
+<p>整个项目就两步，代码也按这两步分了文件：</p>
+
+<table>
+<tr><th>步骤</th><th>做什么</th><th>代码在哪</th></tr>
+<tr><td>第 1 步：拼逐笔流</td><td>把委托、成交两个文件整理成同一张十列的表，排好先后</td><td>各交易所各写各的：<code>sz_stock_build_orderbook.py</code>（深市）、<code>sh_stock_build_orderbook.py</code>（沪市）</td></tr>
+<tr><td>第 2 步：建订单簿</td><td>沿逐笔流一行一行回放，改订单簿；最后和快照对账</td><td>公共文件 <code>build_orderbook.py</code>，深沪共用</td></tr>
+</table>
+
+<p>你可能会问：为什么这样分？因为两个交易所的<strong>原始数据</strong>长得不一样（撤单写在哪、有没有排队号），但只要第 1 步把它们都整理成同样的十列，第 2 步就完全一样了。所以“不一样的”放在各自的文件里，“一样的”只写一份。</p>
+
+<div class="tip">
+<p><strong>小技巧：</strong>本篇第 2、3 章讲深市怎么拼逐笔流（深市文件），第 4 到 10 章讲订单簿（公共文件）。沪市篇只需要重讲“拼逐笔流”那部分，订单簿直接沿用本篇。</p>
+</div>
+
+<div class="takeaway">一句话：用逐笔记录把盘口一笔一笔演出来，收盘时和交易所快照对一对；先拼逐笔流（分交易所），再建订单簿（公用）。</div>
+
+<!-- ============================================================ -->
+<h2 id="c2">2、深市数据长什么样</h2>
+
+<p>深市给我们两个文件。先看几行，心里有个样子：</p>
+
+<pre><code>orders.csv（逐笔委托）
+seq   time       side  order_type  price   qty   order_no
+1     93000000   S     LIMIT       108500  300   1
+2     93000010   B     LIMIT       108400  200   2
+3     93000020   B     MARKET      0       100   3
+
+trades.csv（逐笔成交，撤单也在这里）
+seq   time       event   bs_flag  price   qty   buy_no  sell_no
+4     93000020   TRADE   B        108500  100   3       1
+5     93000030   CANCEL           0       200   2       0</code></pre>
+
+<p>这就是测试用的手造数据 <code>sz_tiny</code>。有三件事要注意：</p>
+
+<ul>
+<li><strong>撤单在成交文件里。</strong>撤单那一行，被撤的那一边写订单号，另一边是 0，价格也是 0。</li>
+<li><strong>两个文件共用一套 seq。</strong>seq 是交易所发的“排队小票”，不管是委托还是成交，都按先后往下发。所以两个文件合起来按 seq 一排，就是一天里所有事件的真实先后。</li>
+<li><strong>成交和撤单行里没有“订单当初挂在哪个价格”。</strong>成交行的价格是成交价，撤单行的价格是 0。订单的挂单价只在它自己的委托行里出现过一次。这一点第 5 章会用到。</li>
+</ul>
+
+<div class="tip">
+<p><strong>小技巧：</strong>成交行里的 <code>bs_flag</code> 是主动方向（B 主动买、S 主动卖），主动方就是订单号较大、后到的那一方。它对做因子有用，对重建盘口不是必须的。</p>
+</div>
+
+<div class="takeaway">一句话：深市两个文件共用 seq，撤单藏在成交文件里，而订单的挂单价只出现在委托行。</div>
+
+<!-- ============================================================ -->
+<h2 id="c3">3、合成一条逐笔流</h2>
+
+<p class="subtitle">代码：<code>sz_stock_build_orderbook.py</code> 的 <code>load_sz_tick_by_tick</code></p>
+
+<p>订单簿是沿着一条时间线变化的，所以第一步要把两个文件合成一张表，按 seq 排好，后面从头读到尾就行。</p>
+
+<p>你可能会问：直接 <code>pd.concat</code> 两个文件再排序，不就完了？嗯，这里有个坑。</p>
+
+<div class="warning">
+<p><strong>避坑指南：</strong>两个文件的列不一样。直接拼，pandas 会把对方没有的列补成 NaN。整数一旦遇到 NaN，就会被悄悄变成小数，订单号 1009 变成 1009.0；另外一些用不到的列（<code>raw_type</code>、<code>src_row</code> 等）也混进来。</p>
+</div>
+
+<p>所以中间加了一层：先把委托、成交各自整理成<strong>同样的十列</strong>，再拼。这十列定义在 <code>TICK_BY_TICK_COLUMNS</code> 里：</p>
+
+<table>
+<tr><th>列</th><th>含义</th><th>谁有</th></tr>
+<tr><td>seq / time</td><td>先后顺序 / 时间 hhmmssmmm</td><td>都有</td></tr>
+<tr><td>event</td><td>ADD 新委托 / TRADE 成交 / CANCEL 撤单</td><td>都有</td></tr>
+<tr><td>side</td><td>B / S</td><td>ADD、CANCEL 有；TRADE 留空</td></tr>
+<tr><td>order_type</td><td>LIMIT / MARKET / BEST_OWN</td><td>只有 ADD</td></tr>
+<tr><td>price / qty</td><td>价格（0.0001 元）/ 数量（股）</td><td>都有</td></tr>
+<tr><td>order_no</td><td>委托自己的订单号</td><td>只有 ADD</td></tr>
+<tr><td>buy_no / sell_no</td><td>成交或撤单涉及的买方、卖方订单号</td><td>TRADE、CANCEL</td></tr>
+</table>
+
+<p>没有的值用 <code>Int64</code>（大写 I）的空值占位，这种整数类型可以放空值，不会变成小数：</p>
+
+<pre><code>part["order_no"] = orders["order_no"].astype("Int64")
+part["buy_no"] = pd.array([pd.NA] * len(orders), dtype="Int64")   # 新委托没有关联订单号，留空</code></pre>
+
+<p>撤单的方向顺手补上：哪边订单号不是 0，就是撤哪一边。这只是为了后面写起来方便，不是必须的。</p>
+
+<pre><code>is_cancel = part["event"] == "CANCEL"
+part.loc[is_cancel &amp; (part["buy_no"] != 0), "side"] = "B"
+part.loc[is_cancel &amp; (part["sell_no"] != 0), "side"] = "S"</code></pre>
+
+<p>最后拼起来，按 seq 排：</p>
+
+<pre><code>tick_by_tick = pd.concat([order_part, trade_part], ignore_index=True)
+tick_by_tick = tick_by_tick.sort_values("seq", ignore_index=True)
+return tick_by_tick[TICK_BY_TICK_COLUMNS]</code></pre>
+
+<p>000001 这一天合出来 151,713 行：ADD 81,113、TRADE 45,405、CANCEL 25,195；seq 不重复，按 seq 排好后时间一次都没倒退。</p>
+
+<div class="takeaway">一句话：先各自整理成同样的十列再拼，才不会让订单号变成小数、混进无用的列。</div>
+
+<!-- ============================================================ -->
+<h2 id="c4">4、回放：一行一行读</h2>
+
+<p class="subtitle">从这一章到第 10 章，代码都在公共文件 <code>build_orderbook.py</code> 里，深沪共用。</p>
+
+<p>表排好了，接下来就是从第一行读到最后一行，每一行交给订单簿处理：</p>
+
+<pre><code>def build_order_book(tick_by_tick: pd.DataFrame, stop_time: int | None = None) -&gt; OrderBook:
+    order_book = OrderBook()
+    for row in tick_by_tick.itertuples(index=False):
+        if stop_time is not None and row.time &gt; stop_time:   # 超了就停
+            break
+        order_book.apply_row(row)                            # 走到这里，说明没超
+    return order_book</code></pre>
+
+<h3>4.1 为什么用 itertuples(index=False)？</h3>
+
+<p>你可能会想，直接 <code>for row in tick_by_tick</code> 不行吗？不行，直接遍历 DataFrame 拿到的是<strong>列名</strong>，不是行。</p>
+
+<p><code>itertuples</code> 一次给你一行，而且是带名字的元组，可以用 <code>row.event</code>、<code>row.qty</code> 取值，又快又清楚。<code>index=False</code> 的意思是：不要把行号塞进来当第一个字段，我们用不到它。</p>
+
+<div class="tip">
+<p><strong>小技巧：</strong><code>iterrows</code> 也能按行读，但慢很多，而且会把一行的类型统一，整数可能变成小数。十几万行的回放，用 <code>itertuples</code>。</p>
+</div>
+
+<h3>4.2 为什么要有 stop_time？</h3>
+
+<p>想看 10:00 那一刻的盘口？传 <code>stop_time=100000000</code>，读到超过这个时间的第一行就停下，手上的订单簿就是那一刻的。以后做“每张快照都对账”、画某个时刻的深度图、算因子，都靠它。</p>
+
+<div class="warning">
+<p><strong>避坑指南：</strong>判断要写在 <code>apply_row</code> <strong>之前</strong>。写在后面，就会先把超时的那一行处理掉，再停，多处理了一行。</p>
+</div>
+
+<div class="takeaway">一句话：itertuples 一行一行喂给订单簿，stop_time 让你停在任意时刻。</div>
+
+<!-- ============================================================ -->
+<h2 id="c5">5、黑板和本子：三本字典</h2>
+
+<p>这一章是整个项目的核心，我们用一个小故事讲。</p>
+
+<p>你是菜市场的记账员，墙上有一块<strong>黑板</strong>，写着每个价位还有多少人想买、多少人想卖：</p>
+
+<pre><code>卖:  108600 → 300股
+     108500 → 500股      ← 卖一
+买:  108400 → 200股      ← 买一
+     108300 → 700股</code></pre>
+
+<p>大家只看这块黑板，这就是订单簿。在代码里，它是两本字典：</p>
+
+<pre><code>self.bids = {}       # 价格 -&gt; 买单总量
+self.asks = {}       # 价格 -&gt; 卖单总量</code></pre>
+
+<p>为什么分成两本？买盘要找最高价，卖盘要找最低价，分开后 <code>best_bid()</code> 只看 <code>bids</code> 取最大，<code>best_ask()</code> 只看 <code>asks</code> 取最小，互不干扰。</p>
+
+<h3>5.1 黑板够用吗？来一张撤单纸条试试</h3>
+
+<p>逐笔流里来了一行：<code>CANCEL，订单 10，撤 200 股</code>。你要在黑板上划掉 200 股，可是该划哪一行？</p>
+
+<p>纸条上只有订单号和股数，价格是 0。黑板上只写着“108400 共 200 股”，不写这 200 股是谁的。你在黑板上<strong>找不到订单 10</strong>。成交纸条也一样，它写的是成交价，不是订单 10 当初挂的价。</p>
+
+<h3>5.2 所以要有一个本子：orders</h3>
+
+<p>订单 10 刚来的时候，你一边写黑板，一边在本子上记一笔：</p>
+
+<pre><code>self.orders = {}     # 订单号 -&gt; [方向, 价格, 剩余量]
+# 订单10 到达时：
+orders[10] = ["B", 108400, 200]</code></pre>
+
+<p>以后来了撤单或成交纸条，先翻本子，查到订单 10 挂在 108400，再回黑板把 108400 那一行减掉，最后把本子上的剩余量也减掉。剩余量减到 0，这一笔就从本子上划掉。</p>
+
+<svg width="720" height="230" viewBox="0 0 720 230" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="ar2" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#6b7280"/></marker></defs>
+  <rect width="720" height="230" fill="#f9fafb" rx="10"/>
+  <rect x="20" y="85" width="170" height="60" rx="8" fill="#fee2e2" stroke="#ef4444" stroke-width="2"/>
+  <text x="105" y="110" text-anchor="middle" font-size="13" font-weight="bold" fill="#991b1b">纸条：撤订单10</text>
+  <text x="105" y="128" text-anchor="middle" font-size="11" fill="#475569">没有挂单价</text>
+  <line x1="190" y1="115" x2="250" y2="70" stroke="#6b7280" stroke-width="2" marker-end="url(#ar2)"/>
+  <text x="200" y="80" font-size="11" fill="#475569">① 翻本子</text>
+  <rect x="255" y="35" width="200" height="60" rx="8" fill="#f3e8ff" stroke="#a855f7" stroke-width="2"/>
+  <text x="355" y="60" text-anchor="middle" font-size="13" font-weight="bold" fill="#6b21a8">本子 orders</text>
+  <text x="355" y="80" text-anchor="middle" font-size="11" fill="#475569">10 → [B, 108400, 200]</text>
+  <line x1="455" y1="70" x2="515" y2="115" stroke="#6b7280" stroke-width="2" marker-end="url(#ar2)"/>
+  <text x="470" y="85" font-size="11" fill="#475569">② 知道价位</text>
+  <rect x="520" y="85" width="180" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+  <text x="610" y="110" text-anchor="middle" font-size="13" font-weight="bold" fill="#1e40af">黑板 bids</text>
+  <text x="610" y="128" text-anchor="middle" font-size="11" fill="#475569">108400 减 200</text>
+  <rect x="255" y="160" width="200" height="50" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+  <text x="355" y="190" text-anchor="middle" font-size="12" fill="#166534">③ 本子上剩余量也减掉</text>
+  <line x1="355" y1="95" x2="355" y2="158" stroke="#6b7280" stroke-width="2" marker-end="url(#ar2)"/>
+</svg>
+
+<table>
+<tr><th>字典</th><th>回答的问题</th><th>给谁看</th></tr>
+<tr><td><code>bids</code></td><td>买盘每个价位一共多少股？</td><td rowspan="2">大家看（订单簿本身）</td></tr>
+<tr><td><code>asks</code></td><td>卖盘每个价位一共多少股？</td></tr>
+<tr><td><code>orders</code></td><td>某个订单号挂在哪、还剩多少？</td><td>只给自己翻查（账本）</td></tr>
+</table>
+
+<h3>5.3 黑板上为什么不写订单号？</h3>
+
+<p>两个原因。第一，交易所公布的快照本来就只有每档的价格和总量，我们的目标是重建出一样的东西。第二，我们<strong>不撮合</strong>。撮合引擎要知道同一价位谁排在前面，所以每个价位下要挂一个排队的订单队列；我们不需要，因为成交记录已经写明了是哪两个订单成交的，照着减就行。</p>
+
+<div class="tip">
+<p><strong>小技巧：</strong>以后想做“我的单子前面还排着多少股”这类因子，再把 <code>bids[price]</code> 从一个数字改成按时间排好的订单队列。现在不用。</p>
+</div>
+
+<div class="takeaway">一句话：黑板（bids/asks）记每个价位的总量，本子（orders）记每个订单挂在哪；成交和撤单纸条不写挂单价，只能靠本子查。</div>
+
+<!-- ============================================================ -->
+<h2 id="c6">6、apply_row：分派纸条</h2>
+
+<p>每一行逐笔就是一张纸条，只有三种。<code>apply_row</code> 看一眼是哪种，交给对应的人去办：</p>
+
+<pre><code>def apply_row(self, row) -&gt; None:
+    if row.event == 'ADD':
+        self.add_order(row.order_no, row.side, row.order_type, row.price, row.qty)
+    elif row.event == 'TRADE':
+        self.apply_trade(row.buy_no, row.sell_no, row.qty)
+    elif row.event == 'CANCEL':
+        order_no = row.buy_no if row.side == 'B' else row.sell_no
+        self.apply_cancel(order_no, row.qty)
+    else:
+        raise ValueError(f"未知的 event: {row.event}")</code></pre>
+
+<p>它是“逐笔流”和“订单簿”之间的接口。以后逐笔流的列名变了，只改这里，订单簿里面一行都不用动。</p>
+
+<p>注意最后的 <code>raise</code>：碰到不认识的事件，说明数据整理那一层出错了，继续跑没有意义，所以直接停下。这和第 8 章的 <code>return</code> 是两种不同的处理，我们到那里再对比。</p>
+
+<div class="takeaway">一句话：apply_row 只负责看纸条类型、分派，具体加减交给下面的方法。</div>
+
+<!-- ============================================================ -->
+<h2 id="c7">7、add_order：三种委托怎么挂</h2>
+
+<p>新委托来了，要做三件事：<strong>算出挂在哪个价格 → 记进本子 → 写上黑板</strong>。难点在第一件，因为深市有三种委托：</p>
+
+<table>
+<tr><th>类型</th><th>挂在哪</th><th>为什么</th></tr>
+<tr><td>LIMIT 限价</td><td>自己的委托价</td><td>—</td></tr>
+<tr><td>BEST_OWN 本方最优</td><td>到达那一刻本方的最优价（买单取买一，卖单取卖一）</td><td>它的价格字段不可信</td></tr>
+<tr><td>MARKET 市价</td><td>不上黑板，价格记 None</td><td>它没有挂单价，进来就吃对手盘</td></tr>
+</table>
+
+<div class="warning">
+<p><strong>避坑指南：</strong>本方最优单的价格字段在 000001（159 笔）和 300750（7 笔）里，和本方一档<strong>一次都没对上</strong>，常见的是 0、涨停价这类无意义的值。所以不能用它，要自己去黑板上查本方一档。</p>
+</div>
+
+<pre><code>def add_order(self, order_no, side, order_type, price, qty) -&gt; None:
+    # 1. 算出挂单价格
+    if order_type == "LIMIT":
+        price = price                      # 就用传进来的委托价
+    elif order_type == "BEST_OWN":
+        if side == "B":
+            price = self.best_bid()
+        else:
+            price = self.best_ask()
+        if price is None:                  # 本方一个挂单都没有，算不出价格
+            self.problems["本方最优单到达时本方没有挂单"] += 1
+    elif order_type == "MARKET":
+        price = None
+
+    # 2. 记进本子（三项：方向、价格、剩余量）
+    self.orders[order_no] = [side, price, qty]
+    # 3. 有价格才写上黑板
+    if price is not None:
+        self._add_to_level(side, price, qty)</code></pre>
+
+<h3>7.1 市价单不上黑板，那它的股数去哪了？</h3>
+
+<p>用记账员的话说：市价单进门，你在本子上记“订单 3，买，价格空，100 股”，黑板上一笔都不写。紧接着交易所会发来成交纸条“订单 3 和订单 1 成交 100 股”，你翻本子把订单 3 扣到 0、划掉；订单 1 在黑板上的那一行也扣掉 100。</p>
+
+<p>所以市价单的股数不用担心，后面的成交（没成交完的部分会被撤单）会把它结清。000001 这一天回放完，本子里价格为空的订单一笔都没剩。</p>
+
+<h3>7.2 _add_to_level：在黑板某一行上加减</h3>
+
+<pre><code>def _add_to_level(self, side, price, qty) -&gt; None:
+    """qty 可以是负数，表示减；减到 0 就把这个价位删掉。"""
+    if side == "B":
+        order_side = self.bids
+    else:
+        order_side = self.asks
+
+    if price in order_side:
+        order_side[price] += qty
+    else:
+        order_side[price] = qty
+
+    if order_side[price] &lt;= 0:
+        del order_side[price]</code></pre>
+
+<p>加和减用同一个函数，减的时候传负数。减到 0 要把这个价位删掉，不然黑板上会留一堆“0 股”的空行，买一卖一就找错了。</p>
+
+<div class="takeaway">一句话：限价挂委托价，本方最优挂本方一档，市价只记本子不上黑板，等后面的成交来结清。</div>
+
+<!-- ============================================================ -->
+<h2 id="c8">8、_reduce_order：成交和撤单</h2>
+
+<p>成交纸条涉及两个订单，各扣一次；撤单纸条涉及一个订单，扣一次。所以这两个方法几乎没有内容，真正干活的是 <code>_reduce_order</code>，也就是“翻本子扣账”这个动作：</p>
+
+<pre><code>def apply_trade(self, buy_no, sell_no, qty) -&gt; None:
+    self._reduce_order(buy_no, qty)
+    self._reduce_order(sell_no, qty)
+
+def apply_cancel(self, order_no, qty) -&gt; None:
+    self._reduce_order(order_no, qty)</code></pre>
+
+<pre><code>def _reduce_order(self, order_no, qty) -&gt; None:
+    # 1. 翻本子，找不到就记一笔、跳过
+    if order_no not in self.orders:
+        self.problems["找不到订单号"] += 1
+        return
+
+    # 2. 剩余量减掉
+    side, price, remaining_qty = self.orders[order_no]
+    remaining_qty -= qty
+    if remaining_qty &lt; 0:
+        self.problems["剩余量变负"] += 1
+
+    # 3. 挂在黑板上的，黑板那一行也减掉
+    if price is not None:
+        self._add_to_level(side, price, -qty)
+
+    # 4. 扣完了就从本子上划掉，否则写回新的剩余量
+    if remaining_qty &lt;= 0:
+        del self.orders[order_no]
+    else:
+        self.orders[order_no][2] = remaining_qty</code></pre>
+
+<h3>8.1 找不到订单号时，为什么是 return 而不是 raise？</h3>
+
+<p>记账员收到“撤订单 10”，翻遍本子没找到。他有三种做法：</p>
+
+<ol>
+<li><strong>什么都不做，往下写。</strong>下一行 <code>self.orders[order_no]</code> 会直接报 <code>KeyError</code>。所以必须离开这个函数。</li>
+<li><strong>raise，整个程序停掉。</strong>后面还有十几万张纸条，一张有问题就让全天中断，你连还有多少问题都看不到。</li>
+<li><strong>return，记一笔，跳过这一张。</strong>全天跑完后看 <code>problems</code>，就知道问题有多少。</li>
+</ol>
+
+<p>还有一个细节：<code>apply_trade</code> 调了两次 <code>_reduce_order</code>。买方那次 <code>return</code>，只是结束买方这一次调用，卖方那次照样执行，该扣的还是扣了。如果用 <code>raise</code>，卖方就没机会扣，盘口会一路错下去。</p>
+
+<div class="highlight">
+<p><strong>核心要点：</strong>能计数的问题就计数后跳过（<code>return</code>）；只有继续跑已经没意义时才 <code>raise</code>，比如 <code>apply_row</code> 碰到不认识的事件。在深市，“找不到订单号”和“剩余量变负”都应该是 0，不是 0 就说明代码写错了。</p>
+</div>
+
+<h3>8.2 用 sz_tiny 走一遍</h3>
+
+<pre><code>seq1 ADD 卖1 LIMIT 108500×300  → orders={1:[S,108500,300]}             asks={108500:300}
+seq2 ADD 买2 LIMIT 108400×200  → orders 加 2:[B,108400,200]            bids={108400:200}
+seq3 ADD 买3 MARKET ×100       → orders 加 3:[B,None,100]              黑板不变
+seq4 TRADE 买3 卖1 ×100        → 订单3 扣到0删掉；订单1 剩200          asks={108500:200}
+seq5 CANCEL 买2 ×200           → 订单2 扣到0删掉                       bids={}
+
+结果：orders={1:[S,108500,200]}  asks={108500:200}  bids={}</code></pre>
+
+<p>这正是测试 <code>test_回放手造数据</code> 断言的结果。</p>
+
+<div class="takeaway">一句话：成交和撤单都是“翻本子 → 扣黑板 → 扣本子”，找不到就记一笔跳过，不让一张坏纸条毁掉整天。</div>
+
+<!-- ============================================================ -->
+<h2 id="c9">9、查询：买一卖一和前十档</h2>
+
+<p>买一卖一很简单，只有一个坑：刚开盘时黑板是空的，对空字典调用 <code>max()</code> 会报错。所以先判断空不空：</p>
+
+<pre><code>def best_bid(self) -&gt; int | None:
+    if self.bids:
+        return max(self.bids.keys())
+    else:
+        return None
+
+def best_ask(self) -&gt; int | None:
+    if self.asks:
+        return min(self.asks.keys())
+    else:
+        return None</code></pre>
+
+<p>注意 <code>add_order</code> 处理本方最优单时要调用它们，所以它们得先写好。</p>
+
+<p>前十档就是排个序、取前 n 个。<code>.items()</code> 把字典拆成一对一对的 <code>(价格, 数量)</code>；<code>sorted</code> 对这样的元组默认按第一个元素（价格）从小到大排，买盘要从高到低，加 <code>reverse=True</code>：</p>
+
+<pre><code>def top_levels(self, n: int = 10) -&gt; tuple[list, list]:
+    bids = sorted(self.bids.items(), reverse=True)[:n]   # 价格从高到低
+    asks = sorted(self.asks.items())[:n]                 # 价格从低到高
+    return bids, asks                                    # 逗号造元组，等于 return (bids, asks)</code></pre>
+
+<div class="tip">
+<p><strong>小技巧：</strong>现在 <code>max</code> / <code>min</code> / <code>sorted</code> 每次都要把整个字典扫一遍。以后要提速（缓存、有序结构、按价位下标的数组），只改这几个查询方法，其他代码不用动。</p>
+</div>
+
+<div class="takeaway">一句话：买一取 bids 最大、卖一取 asks 最小，空的时候返回 None；前十档就是排序后切片。</div>
+
+<!-- ============================================================ -->
+<h2 id="c10">10、对账和验收</h2>
+
+<p>最后一步，把我们的前十档和交易所最后一张快照逐档比。快照的列是 <code>bid_px1..10</code>、<code>bid_qty1..10</code>、<code>ask_px1..10</code>、<code>ask_qty1..10</code>，价格单位和我们一样是 0.0001 元。我们不足十档时，缺的档位记 0，快照里也是 0。</p>
+
+<pre><code>bids, asks = book.top_levels(10)
+for i in range(10):
+    our_bid_price, our_bid_qty = bids[i] if i &lt; len(bids) else (0, 0)
+    snap_bid_price = int(snapshot[f"bid_px{i + 1}"])
+    ...
+    same = (四个数全部相等)</code></pre>
+
+<h3>10.1 结果</h3>
+
+<table>
+<tr><th>检查项</th><th>000001（主板）</th><th>300750（创业板）</th></tr>
+<tr><td>收盘十档与快照逐档一致</td><td>10 / 10</td><td>10 / 10</td></tr>
+<tr><td>找不到订单号</td><td>0</td><td>0</td></tr>
+<tr><td>剩余量变负</td><td>0</td><td>0</td></tr>
+<tr><td>本方最优单到达时本方没有挂单</td><td>0</td><td>0</td></tr>
+<tr><td>收盘后本子里价格为空的订单</td><td>—</td><td>0</td></tr>
+<tr><td>手造数据测试</td><td colspan="2">16 个全部通过</td></tr>
+</table>
+
+<p>000001 收盘买一 10.84 元 150,400 股，卖一 10.85 元 213,642 股，和快照一模一样。</p>
+
+<div class="highlight">
+<p><strong>核心要点：</strong>收盘十档全部对上，而且全天没有一次异常，说明十几万笔加减里没有一笔算错。创业板和主板用的是同一份代码，没有为它改一行。</p>
+</div>
+
+<div class="warning">
+<p><strong>避坑指南：</strong>只对收盘一刻，是一个必要但不充分的检查：中间某一刻错了、后来又被抵消，收盘时看不出来。下一步要用 <code>stop_time</code> 停在每一张快照的时刻，逐张对账。</p>
+</div>
+
+<div class="takeaway">一句话：两只深市股票收盘十档全部对上、异常全为 0，深市重建这一层可以算过关。</div>
+
+<!-- ============================================================ -->
+<h2 id="c11">11、回头看和下一步</h2>
+
+<p>回头看，整个深市重建其实就是一句话：<strong>按 seq 读纸条，ADD 写本子和黑板，TRADE 和 CANCEL 翻本子再扣黑板</strong>。能这么简单，靠的是深交所数据的两个好性质：</p>
+
+<ul>
+<li>委托和成交共用 seq，顺序是交易所给好的，不用猜；</li>
+<li>每个订单都有一行 ADD，哪怕它一进门就全部成交，所以本子里一定查得到。</li>
+</ul>
+
+<p>到了上交所，这两条都不成立：没有共用的 seq，一进门就吃完的订单也没有 ADD。但订单簿本身（<code>OrderBook</code>）、回放（<code>build_order_book</code>）和对账（<code>compare_with_snapshot</code>）都在公共文件 <code>build_orderbook.py</code> 里，与交易所无关。沪市文件 <code>sh_stock_build_orderbook.py</code> 只需要把沪市数据拼成同样的十列逐笔流，再调用公共函数。这部分在 SH 教程里讲。</p>
+
+<table>
+<tr><th>后续</th><th>做什么</th></tr>
+<tr><td>逐张快照对账</td><td>每张快照都用 stop_time 停下来比一次，不只比收盘</td></tr>
+<tr><td>深市规则</td><td>集合竞价、创业板价格笼子等，对着交易所规则原文核实</td></tr>
+<tr><td>上交所</td><td>没有 seq 时怎么排序、幽灵订单怎么处理</td></tr>
+<tr><td>批量和因子</td><td>多只股票批量跑，从订单簿算特征</td></tr>
+</table>
+
+<div class="takeaway">一句话：深市能“照着纸条加减”就重建出盘口，是因为顺序和订单都齐全；沪市缺了这两样，要补的只是读数据那一层。</div>
+
+<footer>A 股订单簿重建 · 深交所篇</footer>
+</div>
+</div>
+</div>
+</body>
+</html>

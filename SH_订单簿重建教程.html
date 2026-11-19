@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>上交所订单簿重建教程</title>
+<style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+        background: linear-gradient(135deg, #e8f4f8 0%, #d1e9f0 100%);
+        font-family: system-ui, -apple-system, 'PingFang SC', 'Segoe UI', sans-serif;
+        padding: 20px; line-height: 1.8; color: #1f2937;
+    }
+    .double-border {
+        max-width: 1400px; margin: 0 auto; background: #fff;
+        border: 2px solid #f1c40f; border-radius: 24px;
+        box-shadow: 0 20px 30px -15px rgba(0,0,0,0.2), inset 0 1px 0 0 #fff8e0;
+        overflow: hidden;
+    }
+    .container { display: grid; grid-template-columns: 260px 1fr; }
+    .sidebar {
+        background: #fefcf5; border-right: 2px solid #fdebb3; padding: 24px 16px;
+        position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto;
+    }
+    .sidebar h3 { font-size: 1.3rem; color: #b45f06; border-left: 5px solid #f39c12; padding-left: 15px; margin-bottom: 20px; }
+    .chapter-list { list-style: none; }
+    .chapter-list li { margin-bottom: 4px; }
+    .chapter-list a {
+        display: block; padding: 7px 12px; text-decoration: none; color: #2c3e50;
+        border-radius: 12px; transition: all 0.2s; font-weight: 500; font-size: 0.95rem;
+    }
+    .chapter-list a:hover { background: #fdebd0; transform: translateX(3px); }
+    .main-content { padding: 30px 40px; }
+    h1 { color: #1e3a8a; font-size: 1.9rem; margin-bottom: 8px; }
+    .subtitle { color: #64748b; margin-bottom: 20px; }
+    h2 { color: #1e3a8a; border-left: 6px solid #f59e0b; padding-left: 15px; margin: 40px 0 15px; }
+    h3 { color: #2c3e50; margin: 22px 0 10px; }
+    p { margin: 10px 0; }
+    ul, ol { margin: 10px 0 10px 24px; }
+    code { background: #f1f5f9; padding: 1px 6px; border-radius: 6px; font-family: 'JetBrains Mono', Menlo, monospace; font-size: 0.92em; }
+    pre {
+        background: #2d2f36; color: #f8f8f2; padding: 15px; border-radius: 12px;
+        overflow-x: auto; font-family: 'JetBrains Mono', Menlo, monospace; margin: 15px 0; line-height: 1.6;
+    }
+    pre code { background: none; padding: 0; color: inherit; }
+    table { width: 100%; border-collapse: collapse; margin: 15px 0; background: #fefce8; }
+    th, td { border: 1px solid #fcd34d; padding: 9px; text-align: left; }
+    th { background: #fffbeb; }
+    .tip, .warning, .highlight { padding: 12px 18px; border-radius: 16px; margin: 15px 0; }
+    .tip { background: #e0f2fe; border-left: 6px solid #0ea5e9; }
+    .warning { background: #fee2e2; border-left: 6px solid #ef4444; }
+    .highlight { background: #fef9c3; border: 1px solid #facc15; }
+    .takeaway { background: #ecfdf5; border-left: 6px solid #10b981; padding: 12px 18px; border-radius: 16px; margin: 18px 0; font-weight: 600; }
+    svg { max-width: 100%; height: auto; margin: 10px 0; }
+    footer { text-align: center; margin-top: 40px; padding: 15px; color: #64748b; border-top: 1px dashed #e2e8f0; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<div class="double-border">
+<div class="container">
+<div class="sidebar">
+    <h3>📚 目录</h3>
+    <ul class="chapter-list">
+        <li><a href="#c1">第1章 我们要做什么</a></li>
+        <li><a href="#c2">第2章 深市为什么简单</a></li>
+        <li><a href="#c3">第3章 沪市原始数据长什么样</a></li>
+        <li><a href="#c4">第4章 门卫的故事：幽灵订单</a></li>
+        <li><a href="#c5">第5章 剩余量：先成交后 ADD</a></li>
+        <li><a href="#c6">第6章 委托类型去哪了</a></li>
+        <li><a href="#c7">第7章 两种号码：是谁 vs 排第几</a></li>
+        <li><a href="#c8">第8章 整理委托</a></li>
+        <li><a href="#c9">第9章 整理成交</a></li>
+        <li><a href="#c10">第10章 拼起来，造顺序</a></li>
+        <li><a href="#c11">第11章 trade_before_add 参数</a></li>
+        <li><a href="#c12">第12章 回放和验收</a></li>
+        <li><a href="#c13">第13章 回头看和下一步</a></li>
+    </ul>
+</div>
+<div class="main-content">
+
+<h1>上交所订单簿重建教程</h1>
+<p class="subtitle">代码：<code>lob_rebuild/src/sh_stock_build_orderbook.py</code>（沪市拼逐笔流）+ <code>build_orderbook.py</code>（公共：建订单簿、对账） · 数据（在 data/ 下）：SH_603353（股票）、SH_518880（ETF）、SH_110093（可转债），2026-03-02</p>
+
+<!-- ============================================================ -->
+<h2 id="c1">1、我们要做什么</h2>
+
+<p>目标和深市一样：拿着逐笔记录，把盘口一笔一笔演出来，收盘时和交易所快照逐档对一对。</p>
+
+<p>整个项目分两步，代码也按这两步分了文件：</p>
+
+<table>
+<tr><th>步骤</th><th>做什么</th><th>代码在哪</th></tr>
+<tr><td>第 1 步：拼逐笔流</td><td>把委托、成交两个文件整理成同一张十列的表，排好先后</td><td>各写各的：<code>sz_stock_build_orderbook.py</code>、<code>sh_stock_build_orderbook.py</code></td></tr>
+<tr><td>第 2 步：建订单簿</td><td>沿逐笔流一行一行回放，改订单簿，和快照对账</td><td>公共文件 <code>build_orderbook.py</code></td></tr>
+</table>
+
+<p>好消息是，第 2 步已经在深市写好、验证过了。说白了，沪市篇只做一件事：<strong>把沪市的两个文件，拼成一张和深市一模一样的十列逐笔流</strong>。拼好了，订单簿一行都不用改。</p>
+
+<div class="highlight">
+<p><strong>核心要点：</strong>沪市的难点全在第 1 步。两个交易所撮合规则一样（价格优先、时间优先），不一样的是<strong>数据怎么记录</strong>。我们要做的，是把沪市的记录方式翻译成深市的样子。</p>
+</div>
+
+<div class="takeaway">一句话：沪市篇只讲“拼逐笔流”，拼成和深市一样的十列，订单簿直接复用。</div>
+
+<!-- ============================================================ -->
+<h2 id="c2">2、深市为什么简单</h2>
+
+<p>先回忆一下，深市拼逐笔流为什么只要几行代码。靠的是两个好性质：</p>
+
+<ol>
+<li><strong>有 seq。</strong>seq 是交易所发的“排队号”，委托和成交共用一套，按事件发生的先后往下发。两个文件合起来按 seq 一排，就是真实顺序，不用猜。</li>
+<li><strong>每张订单都有一行 ADD。</strong>哪怕它一进门就全部成交，交易所也先写一行 ADD（完整委托量），再写成交。所以回放时，成交、撤单里的订单号一定能在本子（<code>orders</code> 字典）里查到。</li>
+</ol>
+
+<p>到了沪市，这两条<strong>都不成立</strong>。下面一章一章看。</p>
+
+<div class="takeaway">一句话：深市简单，是因为有统一排队号、每单都有 ADD；沪市这两样都没有。</div>
+
+<!-- ============================================================ -->
+<h2 id="c3">3、沪市原始数据长什么样</h2>
+
+<p>先看真实的几行（603353）：</p>
+
+<pre><code>orders.csv（委托，撤单也在这里）
+time       seq  order_no  event   side  order_type  price   qty     raw_side
+91400650        0         STATUS                    0       0       I
+91500050        2         ADD     B                 463400  374500
+93003400        134805    CANCEL  B                 422300  100
+
+trades.csv（成交）
+time       seq  trade_no  event  bs_flag  price   qty  buy_no  sell_no
+92502410        502500    TRADE  S        463300  400  144     182234</code></pre>
+
+<p>和深市比，有四处不同：</p>
+
+<table>
+<tr><th>问题</th><th>深交所</th><th>上交所</th></tr>
+<tr><td>撤单在哪</td><td><code>trades.csv</code>，被撤的一边写订单号，另一边 0，价格 0</td><td><code>orders.csv</code>，<code>order_no</code> 是被撤订单的号，自带价格和方向</td></tr>
+<tr><td>seq（排队号）</td><td>有，委托和成交共用</td><td><strong>空</strong></td></tr>
+<tr><td>委托类型</td><td>LIMIT / MARKET / BEST_OWN</td><td><strong>空</strong>（万得沪市不提供）</td></tr>
+<tr><td>其他行</td><td>—</td><td>STATUS：交易阶段切换（9:14 <code>I</code>、9:25 <code>O</code>、14:57 <code>J</code>、15:00 <code>C</code>），不是订单</td></tr>
+</table>
+
+<p>还有一处藏在数据里、看几行看不出来的不同：<strong>ADD 的数量</strong>。下两章专门讲。</p>
+
+<div class="takeaway">一句话：沪市撤单在委托文件里，没有 seq，没有委托类型，还多了 STATUS 行。</div>
+
+<!-- ============================================================ -->
+<h2 id="c4">4、门卫的故事：幽灵订单</h2>
+
+<p>两个交易所各有一个门卫。每来一位顾客（订单），门卫要写一张“到货单”交给你，到货单就是 <code>orders.csv</code> 里的一行 ADD。</p>
+
+<ul>
+<li><strong>深市门卫：</strong>每位顾客都写到货单。哪怕顾客一进门就把货全买走了，也先写到货单，再写成交单。</li>
+<li><strong>沪市门卫：</strong>顾客一进门就全部成交的，他觉得没必要上黑板，<strong>不写到货单</strong>，只写成交单。</li>
+</ul>
+
+<p>落到我们的变量上，记住一条规则：<strong><code>orders</code> 字典只有 <code>add_order</code> 会写入，而 <code>add_order</code> 只在读到 ADD 行时才被调用。</strong>没有 ADD 行，这张订单就从没进过本子。</p>
+
+<p>拿一笔沪市成交逐行走。卖单 1 先挂着 108500 × 300 股；买单 7 来了，买 100 股，一进门就吃完了，所以没有 ADD：</p>
+
+<pre><code>第 1 行 ADD   订单1 卖 108500×300
+        → orders = {1: ['S', 108500, 300]}    asks = {108500: 300}
+
+第 2 行 TRADE 买7 卖1 ×100
+        → _reduce_order(7, 100)：本子里没有 7（从没写入过）→ 计数，return
+        → _reduce_order(1, 100)：找到，300 → 200
+        → orders = {1: ['S', 108500, 200]}    asks = {108500: 200}  ✓</code></pre>
+
+<p>最终盘口是对的：订单 7 一进门就吃完了，本来就不该在盘口上留下任何东西，跳过它正好。</p>
+
+<div class="highlight">
+<p><strong>核心要点：</strong>这就是为什么 <code>_reduce_order</code> 找不到订单号时用 <code>return</code>（记一笔、跳过），而不是 <code>raise</code>（停掉程序）。<code>apply_trade</code> 调了两次 <code>_reduce_order</code>，买方那次 <code>return</code> 不影响卖方那次照常扣。如果用 <code>raise</code>，603353 一天有两万多次这样的成交，程序第一次就停了。</p>
+</div>
+
+<p>实测幽灵订单数：603353 有 20,812 笔，518880 有 164,916 笔，110093（可转债）是 0 笔。</p>
+
+<div class="warning">
+<p><strong>避坑指南：</strong>所以在沪市，“找不到订单号”这个计数<strong>不再是错误指标</strong>。深市它应该是 0；沪市它很大，但大部分是正常的。沪市的验收看两样：<strong>剩余量变负 = 0，十档对上</strong>。</p>
+</div>
+
+<div class="takeaway">一句话：沪市一进门就吃完的订单不留 ADD，它的订单号只在成交行里露一面，本子里自然查不到，跳过就对了。</div>
+
+<!-- ============================================================ -->
+<h2 id="c5">5、剩余量：先成交后 ADD</h2>
+
+<p>场景再复杂一点：卖单 1 挂着 108500 × 300。买单 7 来了，要买 500 股，价格 108500，一进门吃掉 300 股，<strong>还剩 200 股</strong>挂在买盘上。</p>
+
+<p>现实里的顺序就是：先成交，然后才有剩余的挂单。沪市门卫等撮合做完，看顾客还剩 200 股没买到，才补写到货单，写的是 <strong>200（剩余量）</strong>，不是 500。</p>
+
+<p>麻烦在于：委托和成交在两个文件里，没有共用的 seq，这两行又常常是<strong>同一毫秒</strong>。合并时如果只按时间排，很容易排反。排反了会怎样？两种顺序都走一遍：</p>
+
+<pre><code>排错：ADD 在前
+行1 ADD   订单7 买 108500 qty=200  → orders[7]=200，bids={108500: 200}
+行2 TRADE 买7 卖1 qty=300          → 订单7 200-300 = -100 ✗ 剩余量变负
+                                      黑板 108500 扣 300 → 负数 → 被删掉
+结果：bids={}  ✗  （那 200 股凭空消失了）
+
+排对：成交在前
+行1 TRADE 买7 卖1 qty=300          → 订单7 还没登记，找不到，跳过；订单1 扣完
+行2 ADD   订单7 买 108500 qty=200  → orders[7]=200，bids={108500: 200}
+结果：bids={108500: 200}  ✓</code></pre>
+
+<p>所以沪市股票和 ETF：<strong>成交行要排在这张订单自己的 ADD 前面</strong>。这也是沪市“找不到订单号”的第二个来源：主动单有剩余时，它的成交先到，那一刻 ADD 还没来，所以也查不到，同样是正常的。</p>
+
+<h3>5.1 可转债反过来</h3>
+
+<p>数据显示，可转债 110093 的 ADD 是<strong>完整量</strong>（500），和深市一样，所以顺序要反过来：ADD 在前，成交在后。</p>
+
+<pre><code>行1 ADD   订单7 qty=500   → bids={108500: 500}
+行2 TRADE qty=300         → 订单7 剩 200，bids={108500: 200}  ✓</code></pre>
+
+<p>如果可转债硬用“成交在前”，订单 7 的 ADD 后到，登记成 500，盘口就多出 300 股。实测十档 0/10。</p>
+
+<div class="warning">
+<p><strong>避坑指南：</strong>“股票、ETF 先成交后 ADD，可转债先 ADD 后成交”这条规律是从三份样本里<strong>归纳</strong>出来的，收盘对账都通过了，但没有交易所文档确认，也还没有逐张快照验证。</p>
+</div>
+
+<div class="takeaway">一句话：沪市股票和 ETF 的 ADD 写的是成交后的剩余量，所以成交要排在它自己的 ADD 前面，不然会扣多；可转债的 ADD 是完整量，顺序相反。</div>
+
+<!-- ============================================================ -->
+<h2 id="c6">6、委托类型去哪了</h2>
+
+<p>你可能会问：沪市没有 <code>order_type</code>，那市价单、本方最优单怎么办？</p>
+
+<p>先说事实：上交所有市价单，只是这份万得沪市数据<strong>没有提供</strong>类型这一列。但对重建来说，没有它也不影响。</p>
+
+<p>回想深市为什么需要类型：深市的 ADD 是订单<strong>刚到</strong>时写的，市价单、本方最优单的价格字段不可信，要靠类型才知道它挂在哪。沪市的 ADD 是撮合<strong>之后</strong>才写的，写的是剩下的部分<strong>真正挂在哪个价格</strong>。数据里核对过：沪市所有 ADD 都带价格，没有一笔是 0。所以不管原来是什么类型，到写 ADD 的时候挂单价已经确定了，统一当 LIMIT 挂就行。</p>
+
+<h3>6.1 限价单也会立刻成交</h3>
+
+<p>卖一是 108500 × 300：</p>
+<ul>
+<li>买单出价 108400，够不着卖一，直接挂在买盘；</li>
+<li>买单出价 108500，<strong>够到了卖一</strong>，立刻吃掉 300 股，剩下的再挂。</li>
+</ul>
+
+<p>上一章的买单 7 就是第二种，它是限价单。所以沪市的“幽灵订单”不只是市价单，出价够高的限价单一样可能一进门就吃完。</p>
+
+<div class="tip">
+<p><strong>小技巧：</strong>本方最优单（深市的 BEST_OWN）取的是<strong>自己这一边</strong>的一档（买单取买一），而买一一定低于卖一，所以它永远不会立刻成交，只会排在本方一档后面。会立刻成交的是“对手方最优”（买单取卖一）。</p>
+</div>
+
+<div class="takeaway">一句话：沪市的 ADD 写的已经是最终挂单价，所以不需要委托类型，统一按限价挂。</div>
+
+<!-- ============================================================ -->
+<h2 id="c7">7、两种号码：是谁 vs 排第几</h2>
+
+<p>沪市有订单号、有买卖单号，为什么还说“没有 seq”？因为它们回答的是两个不同的问题：</p>
+
+<ul>
+<li><strong>订单号回答“是谁”</strong>，就像学号。成交行里 <code>sell_no=182234</code>，说明这笔成交涉及学号 182234 的那张订单。委托的 <code>order_no</code> ↔ 成交的 <code>buy_no</code> / <code>sell_no</code>，这是<strong>关联</strong>。回放时拿它去 <code>orders</code> 字典里查，不需要 pandas 的表连接。</li>
+<li><strong>seq 回答“排第几”</strong>，就像全校统一发的排队小票，不管在委托窗口还是成交窗口办事，小票号都按先后往下发。这是<strong>排序</strong>。</li>
+</ul>
+
+<pre><code>深市：两样都有
+orders.csv  ADD   seq=7   order_no=7
+trades.csv  TRADE seq=8   buy_no=7 sell_no=1        ← 7 在 8 前，不用猜
+
+沪市：只有学号，没有排队小票
+orders.csv  ADD   time=93003400  order_no=672903
+trades.csv  TRADE time=93003400  buy_no=672227 sell_no=672903   ← 同一毫秒，谁先？</code></pre>
+
+<div class="warning">
+<p><strong>避坑指南：</strong>成交文件里的 <code>trade_no</code> 是成交自己的编号，只在成交内部连续，<strong>不能</strong>拿来和订单号比较或排序，也不能用来关联。</p>
+</div>
+
+<p>但订单号还有一个用处：数据核对过，ADD 的订单号随到达顺序<strong>递增</strong>（三份数据里从不倒退、不重复）；成交里订单号<strong>较大</strong>的一方是后到的主动方（和 <code>bs_flag</code> 在三份数据上 100% 一致）。所以订单号也能拿来当“先后”的依据，这就是第 10 章造顺序的基础。</p>
+
+<div class="takeaway">一句话：订单号管“这笔成交说的是哪张订单”，seq 管“所有行排第几”；沪市只有订单号，所以排序得用订单号自己造。</div>
+
+<!-- ============================================================ -->
+<h2 id="c8">8、整理委托</h2>
+
+<p class="subtitle">代码：<code>sh_orders_to_tick_by_tick</code></p>
+
+<p>和深市一样，两个文件列不同，不能直接拼，先各自整理成十列。委托文件三种行，一行一行想它进了逐笔流该长什么样：</p>
+
+<table>
+<tr><th>原始行</th><th>整理后</th><th>为什么</th></tr>
+<tr><td>STATUS</td><td>丢掉</td><td>不是订单</td></tr>
+<tr><td>ADD 订单 2，买 463400 × 374500</td><td><code>order_type=LIMIT</code>，<code>order_no=2</code>，<code>buy_no / sell_no</code> 空</td><td>沪市 ADD 都带真实挂单价</td></tr>
+<tr><td>CANCEL B，<code>order_no=134805</code></td><td><code>order_no</code> 空，<code>buy_no=134805</code>，<code>sell_no=0</code></td><td>装扮成深市撤单的样子</td></tr>
+</table>
+
+<p>为什么撤单要“装扮”？看 <code>apply_row</code> 怎么处理撤单：</p>
+
+<pre><code>order_no = row.buy_no if row.side == 'B' else row.sell_no</code></pre>
+
+<p>它是从 <code>buy_no</code> / <code>sell_no</code> 里取被撤订单号的，因为深市就是这么记的。所以沪市撤单行的 <code>order_no</code> 要<strong>挪</strong>过去（不是删掉），<code>order_no</code> 留给“新委托自己的订单号”，两边含义一致，<code>apply_row</code> 一个字不用改。</p>
+
+<h3>8.1 写法：先填默认值，再按条件改</h3>
+
+<p>整个函数每一列都是同一个套路。用这 4 行走一遍：</p>
+
+<pre><code>   event   side  order_no
+0  ADD     B     2
+1  CANCEL  B     134805
+2  CANCEL  S     489777
+3  ADD     S     672903</code></pre>
+
+<p><strong>第一步，造筛选条件。</strong><code>orders["event"] == "ADD"</code> 逐行比较，得到一列 True/False（布尔 Series，不是 DataFrame），行号和原表对齐：</p>
+
+<pre><code>is_add = orders["event"] == "ADD"                     # True, False, False, True
+cancel_buy = is_cancel &amp; (orders["side"] == "B")      # &amp; 是“并且”：False, True, False, False</code></pre>
+
+<p><strong>第二步，先给整列填默认值，再用 <code>.loc[行, 列]</code> 改符合条件的行。</strong><code>.loc</code> 逗号前选行、逗号后选列；选行的位置除了放行号，也可以放一列 True/False，表示“挑出为 True 的行”：</p>
+
+<pre><code>part["buy_no"] = pd.array([pd.NA] * n, dtype="Int64")        # 全部先填空
+part.loc[cancel_buy, "buy_no"] = orders.loc[cancel_buy, "order_no"]   # 第 1 行填 134805
+part.loc[cancel_buy, "sell_no"] = 0                                    # 另一边填 0</code></pre>
+
+<p>整理完：</p>
+
+<pre><code>   event   side  order_type  order_no  buy_no  sell_no
+0  ADD     B     LIMIT       2         &lt;NA&gt;    &lt;NA&gt;
+1  CANCEL  B                 &lt;NA&gt;      134805  0
+2  CANCEL  S                 &lt;NA&gt;      0       489777
+3  ADD     S     LIMIT       672903    &lt;NA&gt;    &lt;NA&gt;</code></pre>
+
+<div class="warning">
+<p><strong>避坑指南：</strong>去掉 STATUS 后，原来的行号会断开（比如少了 0）。新表 <code>part</code> 的行号从 0 开始，两边对不上，<code>.loc</code> 就会改错行。所以一开头要 <code>reset_index(drop=True)</code> 重新编号。</p>
+</div>
+
+<div class="takeaway">一句话：委托这边丢 STATUS、ADD 当限价、撤单把订单号挪进 buy_no / sell_no；每一列都是“先填默认值，再按条件改”。</div>
+
+<!-- ============================================================ -->
+<h2 id="c9">9、整理成交</h2>
+
+<p class="subtitle">代码：<code>sh_trades_to_tick_by_tick</code></p>
+
+<p>成交这边简单：全部是 TRADE，<code>side</code>、<code>order_type</code> 留空（成交涉及买卖两方），<code>order_no</code> 留空，<code>buy_no</code> / <code>sell_no</code> 原样照抄。<code>seq</code> 两边都先空着，排好序再编。</p>
+
+<pre><code>seq   time      event  side  order_type  price   qty  order_no  buy_no  sell_no
+&lt;NA&gt;  92502410  TRADE                    463300  400  &lt;NA&gt;      144     182234</code></pre>
+
+<div class="takeaway">一句话：成交行原样照抄买卖订单号，其余列留空。</div>
+
+<!-- ============================================================ -->
+<h2 id="c10">10、拼起来，造顺序</h2>
+
+<p class="subtitle">代码：<code>load_sh_tick_by_tick</code> → <code>sort_sh_tick_by_tick</code> → <code>add_sort_columns</code></p>
+
+<p>先看全貌，<code>load_sh_tick_by_tick</code> 就四步：</p>
+
+<pre><code>orders = read_sh_orders(folder)                    # 1. 读
+trades = read_sh_trades(folder)
+order_part = sh_orders_to_tick_by_tick(orders)     # 2. 各自整理成十列
+trade_part = sh_trades_to_tick_by_tick(trades)
+tick_by_tick = pd.concat([order_part, trade_part], ignore_index=True)   # 3. 拼
+return sort_sh_tick_by_tick(tick_by_tick, trade_before_add)              # 4. 排序、编 seq</code></pre>
+
+<p>和深市只差第 4 步。<code>concat</code> 只是上下摞起来，委托在上、成交在下，顺序是乱的。</p>
+
+<h3>10.1 一个真实的场景</h3>
+
+<p>603353，9:30:03.400 这一毫秒。卖单 672903 限价 462600，一进门当主动方，以 463300 吃掉了两笔买单；剩下 2600 股挂上卖盘；接着后来的买单 673016、673324 又吃了它。拼完、还没排序时：</p>
+
+<pre><code>CANCEL  B  134805
+CANCEL  S  489777
+ADD     S  672903  462600×2600      ← 委托都在上面
+ADD     S  673599  463100×100
+TRADE   买672227 卖672843 300
+TRADE   买672227 卖672903 200       ← 672903 自己的成交，排到了它的 ADD 后面 ✗
+TRADE   买672645 卖672903 200
+TRADE   买673016 卖672903 800
+TRADE   买673324 卖672903 100</code></pre>
+
+<h3>10.2 给每一行算两个数</h3>
+
+<p><strong>key：这一行在“订单号这条线”上的位置。</strong>订单号按到达顺序发，号小的在前。</p>
+<ul>
+<li>ADD：就是这张订单本身，用自己的订单号；</li>
+<li>TRADE：成交是主动方进来时发生的，用较大的订单号（主动方）；</li>
+<li>CANCEL：用被撤订单号。撤单行另一边是 0，取较大值正好就是它，所以代码里 TRADE 和 CANCEL 可以一起用“较大的号”。</li>
+</ul>
+
+<p><strong>rank：key 撞车时谁先，数字小的在前。</strong>672903 的 ADD 和它主动吃单的成交，key 都是 672903。股票、ETF 先成交后 ADD，所以成交 0、ADD 1；撤单 2。</p>
+
+<pre><code>bigger_no = result[["buy_no", "sell_no"]].max(axis=1)   # axis=1：每一行在两列之间取较大的
+result["key"] = bigger_no                               # 先全部填“较大的号”（ADD 行两边都空，结果也是空）
+result.loc[is_add, "key"] = result.loc[is_add, "order_no"]   # 再把 ADD 行改成自己的订单号
+
+rank_of = {"TRADE": 0, "ADD": 1, "CANCEL": 2}           # 对照表
+result["rank"] = result["event"].map(rank_of)           # 每个 event 去表里查，换成数字</code></pre>
+
+<p><code>add_sort_columns</code> 只贴这两列，不排序。</p>
+
+<h3>10.3 按（time, key, rank）逐级比较</h3>
+
+<pre><code>result.sort_values(["time", "key", "rank"], kind="stable", ignore_index=True)</code></pre>
+
+<p>像查字典：先比 time，time 相同才比 key，key 也相同才比 rank。所以 key 只在同一毫秒里起作用，rank 只在同一毫秒、同一个 key 时起作用。排完：</p>
+
+<pre><code>                                  key      rank
+CANCEL  B  134805                 134805   2    ← key 最小，排最前（rank 再大也没关系）
+CANCEL  S  489777                 489777   2
+TRADE   买672227 卖672843         672843   0
+TRADE   买672227 卖672903         672903   0    ← 672903 主动吃单
+TRADE   买672645 卖672903         672903   0
+ADD     S  672903  2600           672903   1    ← 剩余量挂上去
+TRADE   买673016 卖672903         673016   0    ← 后来的买单吃它（它已经是被动方）
+TRADE   买673324 卖672903         673324   0
+ADD     S  673599  100            673599   1</code></pre>
+
+<p>最后从 1 开始编 seq，去掉 key、rank 两列，就是和深市一样的十列逐笔流。</p>
+
+<div class="highlight">
+<p><strong>核心要点：</strong>排序不需要先把“先成交后 ADD”的情况找出来单独处理。对所有行用同一条规则，这种情况自然就排对了。</p>
+</div>
+
+<div class="warning">
+<p><strong>避坑指南：</strong>不是“所有成交排在所有 ADD 前面”。那样被动方（比如订单 672227）的 ADD 可能被排到成交后面，成交就找不到被动方了。规则只管同一毫秒里、同一个 key 的几行。</p>
+</div>
+
+<h3>10.4 撤单为什么 rank 是 2？</h3>
+
+<p>撤单并不“总是最后一个”，上面的 134805 就排在最前面。rank 2 只在撞 key 时起作用，而和撤单撞 key 的只能是<strong>同一张订单</strong>的事：同一毫秒里进来、成交、被撤。一张订单还没挂上去就不可能被撤，所以撤单排在这张订单的其他事之后。</p>
+
+<p>说实话：在 603353 和 518880 上，“撤单用被撤订单号当 key”和“撤单排在同一毫秒最后”两种做法结果完全一样，说明这两份数据里几乎没有“同一毫秒进来又被撤”的情况，这条规则在数据上还没被真正考验过。</p>
+
+<div class="takeaway">一句话：用订单号给每行算位置（key），撞车时用 rank 决定谁先，按（time, key, rank）排好再编 seq。</div>
+
+<!-- ============================================================ -->
+<h2 id="c11">11、trade_before_add 参数</h2>
+
+<p>股票、ETF 和可转债的 rank 对照表不同，靠参数 <code>trade_before_add</code> 区分。它从最外层一层一层往下传：</p>
+
+<pre><code>你调用：load_sh_tick_by_tick(folder, trade_before_add=True)
+           ↓ 原样传下去
+        sort_sh_tick_by_tick(tick_by_tick, trade_before_add)
+           ↓ 原样传下去
+        add_sort_columns(tick_by_tick, trade_before_add)
+           ↓ 在这里才真正用来选对照表
+        if trade_before_add: rank_of = {"TRADE": 0, "ADD": 1, "CANCEL": 2}
+        else:                rank_of = {"ADD": 0, "TRADE": 1, "CANCEL": 2}</code></pre>
+
+<table>
+<tr><th>品种</th><th>传什么</th></tr>
+<tr><td>股票 603353、ETF 518880</td><td><code>True</code>（默认值，可以不写）</td></tr>
+<tr><td>可转债 110093</td><td><code>False</code>（必须手动传）</td></tr>
+</table>
+
+<div class="warning">
+<p><strong>避坑指南：</strong>程序不会自动判断，要靠调用的人传对。可转债如果按默认的 True 回放，收盘十档从 10/10 变成 0/10。<code>main()</code> 里用 <code>SAMPLES</code> 列表把每份数据该传的值写死了；以后可以按代码前缀自动判断（例如 110 开头是可转债）。</p>
+</div>
+
+<div class="takeaway">一句话：trade_before_add 由最外层调用时传入，中间两层原样往下传；股票、ETF 用 True，可转债传 False。</div>
+
+<!-- ============================================================ -->
+<h2 id="c12">12、回放和验收</h2>
+
+<p>逐笔流排好了，建订单簿就直接用公共文件里的函数，一行不改：</p>
+
+<pre><code>from build_orderbook import build_order_book, compare_with_snapshot
+
+tick_by_tick = load_sh_tick_by_tick("../data/SH_603353_20260302")   # 股票，默认 True
+book = build_order_book(tick_by_tick)</code></pre>
+
+<p>为什么能直接用？因为沪市三种行都已经改成了 <code>apply_row</code> 认识的样子：</p>
+
+<table>
+<tr><th>沪市的行</th><th>整理后</th><th><code>apply_row</code> 怎么处理</th></tr>
+<tr><td>ADD</td><td><code>order_type=LIMIT</code>，带价格</td><td><code>add_order</code>：挂上黑板，记进本子</td></tr>
+<tr><td>TRADE</td><td><code>buy_no</code> / <code>sell_no</code></td><td><code>apply_trade</code>：两边各扣一次；查不到的计数后跳过</td></tr>
+<tr><td>CANCEL</td><td>订单号在 <code>buy_no</code> 或 <code>sell_no</code></td><td><code>apply_cancel</code>：按 <code>side</code> 取出订单号去扣</td></tr>
+</table>
+
+<h3>12.1 结果（收盘一刻）</h3>
+
+<table>
+<tr><th>数据</th><th>trade_before_add</th><th>收盘十档</th><th>剩余量变负</th><th>找不到订单号</th></tr>
+<tr><td>603353 股票</td><td>True</td><td>10 / 10</td><td>0</td><td>38,189（正常）</td></tr>
+<tr><td>518880 ETF</td><td>True</td><td>10 / 10</td><td>0</td><td>358,931（正常）</td></tr>
+<tr><td>110093 可转债</td><td>False</td><td>10 / 10</td><td>0</td><td>0</td></tr>
+</table>
+
+<p>对比实验（把顺序反过来）：603353 剩余量变负 1,023 次；518880 十档 8/10、剩余量变负 6,171 次；110093 十档 0/10。这说明顺序规则是起作用的，不是怎么排都对。</p>
+
+<div class="takeaway">一句话：拼好的沪市逐笔流直接交给公共的 build_order_book，三个品种收盘十档全部对上，剩余量变负都是 0。</div>
+
+<!-- ============================================================ -->
+<h2 id="c13">13、回头看和下一步</h2>
+
+<p>回头看，沪市比深市多做的只有三件事，全在拼逐笔流这一步：</p>
+<ol>
+<li>撤单从委托文件里取出来，装扮成深市撤单的样子；</li>
+<li>没有 seq，用订单号造 key、用 rank 定撞车时谁先，排好再编 seq；</li>
+<li>股票 / ETF 和可转债的 ADD 含义不同，用 <code>trade_before_add</code> 区分。</li>
+</ol>
+
+<p>订单簿、回放、对账一行都没改，这正是“先拼逐笔流、再建订单簿”这样分层的好处。</p>
+
+<table>
+<tr><th>后续</th><th>做什么</th></tr>
+<tr><td>逐张快照对账</td><td>用 <code>stop_time</code> 停在每张快照的时刻比一次，验证排序规则不只在收盘时成立</td></tr>
+<tr><td>拆分“找不到订单号”</td><td>分成正常（幽灵订单、成交先于剩余量 ADD）和异常两类计数</td></tr>
+<tr><td>自动判断品种</td><td>按代码前缀决定 <code>trade_before_add</code></td></tr>
+<tr><td>确认 STATUS 含义</td><td>I / O / J / C 是否就是交易阶段切换</td></tr>
+</table>
+
+<div class="takeaway">一句话：沪市难在“没有排队号、ADD 是剩余量”，我们用订单号造出顺序，把它翻译成深市的样子，订单簿就能原样复用。</div>
+
+<footer>A 股订单簿重建 · 上交所篇</footer>
+</div>
+</div>
+</div>
+</body>
+</html>
